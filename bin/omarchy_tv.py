@@ -34,8 +34,10 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -44,7 +46,8 @@ CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
 CONF_DIR = CONFIG_HOME / "omarchy-tv"
 CONFIG_FILE, CREDS_FILE = CONF_DIR / "config.json", CONF_DIR / "credentials.json"
 CERT, KEY = CONF_DIR / "androidtv-cert.pem", CONF_DIR / "androidtv-key.pem"
-RUN_DIR = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/omarchy-tv-{os.getuid()}") / "omarchy-tv"
+RUN_DIR = (Path(os.environ["XDG_RUNTIME_DIR"]) / "omarchy-tv" if os.environ.get("XDG_RUNTIME_DIR")
+           else Path(f"/tmp/omarchy-tv-{os.getuid()}"))
 STATUS_FILE, CMD_FIFO = RUN_DIR / "status.json", RUN_DIR / "cmd"
 LOCK_FILE, LOG_FILE = RUN_DIR / "daemon.lock", RUN_DIR / "daemon.log"
 CLIENT_NAME = f"Omarchy ({socket.gethostname()})"
@@ -87,13 +90,42 @@ def load_json(path: Path, default):
         return default
 
 
-def save_json(path: Path, data, private: bool = False) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-    if private:
-        tmp.chmod(0o600)
-    tmp.replace(path)
+# Every file lives in a directory that only we can write to (checked here), and
+# is opened without following symlinks, so no other user can redirect a write.
+
+def private_dir(path: Path) -> Path:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+        raise TvError(f"refusing to use {path}: not a directory owned by you")
+    if stat.S_IMODE(st.st_mode) & 0o077:
+        os.chmod(path, 0o700)
+    return path
+
+
+def open_private(path: Path, flags: int, kind=stat.S_ISREG) -> int:
+    private_dir(path.parent)
+    fd = os.open(path, flags | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    st = os.fstat(fd)
+    if not kind(st.st_mode) or st.st_uid != os.getuid():
+        os.close(fd)
+        raise TvError(f"refusing to use {path}: unexpected file type or owner")
+    return fd
+
+
+def save_json(path: Path, data) -> None:
+    """Atomic replace: write a fresh 0600 file next to it, then rename over it."""
+    fd, tmp = tempfile.mkstemp(dir=private_dir(path.parent), prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def slug(name: str) -> str:
@@ -138,7 +170,7 @@ class Driver:
 
     def save_creds(self, **values) -> None:
         self.creds.update(values)
-        save_json(CREDS_FILE, self.daemon.creds, private=True)
+        save_json(CREDS_FILE, self.daemon.creds)
 
     def changed(self, *_) -> None:
         self.daemon.status_changed()
@@ -291,7 +323,7 @@ class AndroidTV(Driver):
 
     def make_remote(self):
         from androidtvremote2 import AndroidTVRemote
-        CONF_DIR.mkdir(parents=True, exist_ok=True)
+        private_dir(CONF_DIR)
         return AndroidTVRemote(CLIENT_NAME, str(CERT), str(KEY), self.host, enable_voice=True)
 
     async def connect(self) -> None:
@@ -439,7 +471,7 @@ class FireTV(Driver):
         from adb_shell.auth.keygen import keygen
         from adb_shell.auth.sign_pythonrsa import PythonRSASigner
         if not ADB_KEY.exists():
-            CONF_DIR.mkdir(parents=True, exist_ok=True)
+            private_dir(CONF_DIR)
             keygen(str(ADB_KEY))
             ADB_KEY.chmod(0o600)
         return PythonRSASigner(Path(str(ADB_KEY) + ".pub").read_text(), ADB_KEY.read_text())
@@ -1310,9 +1342,9 @@ class Daemon:
         }
         if default in status["devices"]:
             status.update(device=default, **status["devices"][default])
-        RUN_DIR.mkdir(parents=True, exist_ok=True)
         # Written in place (no rename) so file watchers keep working.
-        STATUS_FILE.write_text(json.dumps(status, ensure_ascii=False) + "\n")
+        with os.fdopen(open_private(STATUS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC), "w") as f:
+            f.write(json.dumps(status, ensure_ascii=False) + "\n")
 
     def say(self, text: str, device: str | None = None) -> None:
         self.message, self.message_device = text, device
@@ -1511,7 +1543,7 @@ class Daemon:
             await drv.close()
         host = self.devices().pop(dev_id, {}).get("host")
         self.creds.pop(dev_id, None)
-        save_json(CREDS_FILE, self.creds, private=True)
+        save_json(CREDS_FILE, self.creds)
         for conf in self.devices().values():
             if conf.get("volume_via") == dev_id:
                 conf.pop("volume_via")
@@ -1608,11 +1640,11 @@ class Daemon:
                 await asyncio.wait_for(stop.wait(), 15)
 
     async def run(self) -> None:
-        RUN_DIR.mkdir(parents=True, exist_ok=True)
-        if not CMD_FIFO.exists():
+        private_dir(RUN_DIR)
+        with contextlib.suppress(FileExistsError):
             os.mkfifo(CMD_FIFO, 0o600)
-        rfd = os.open(CMD_FIFO, os.O_RDONLY | os.O_NONBLOCK)
-        wfd = os.open(CMD_FIFO, os.O_WRONLY)  # avoids EOF when no client is writing
+        rfd = open_private(CMD_FIFO, os.O_RDONLY | os.O_NONBLOCK, stat.S_ISFIFO)
+        wfd = open_private(CMD_FIFO, os.O_WRONLY, stat.S_ISFIFO)  # avoids EOF when no client is writing
         buffer = b""
 
         def on_command() -> None:
@@ -1660,8 +1692,7 @@ def run_daemon(ensure: bool) -> None:
     if ensure and "INVOCATION_ID" not in os.environ and systemd_managed():
         subprocess.run(["systemctl", "--user", "start", "omarchy-tv"], check=False)
         return
-    RUN_DIR.mkdir(parents=True, exist_ok=True)
-    lock = open(LOCK_FILE, "w")
+    lock = open_private(LOCK_FILE, os.O_RDWR | os.O_CREAT)
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
@@ -1680,7 +1711,7 @@ def run_daemon(ensure: bool) -> None:
 def daemon_send(msg: dict, start: bool = True) -> None:
     for attempt in range(40):
         try:
-            fd = os.open(CMD_FIFO, os.O_WRONLY | os.O_NONBLOCK)
+            fd = open_private(CMD_FIFO, os.O_WRONLY | os.O_NONBLOCK, stat.S_ISFIFO)
         except OSError:
             if not start:
                 raise TvError("the omarchy-tv service is not running")
@@ -1698,8 +1729,7 @@ def start_daemon() -> None:
     if systemd_managed():
         subprocess.run(["systemctl", "--user", "start", "omarchy-tv"], check=False)
         return
-    RUN_DIR.mkdir(parents=True, exist_ok=True)
-    with open(LOG_FILE, "a") as log:
+    with os.fdopen(open_private(LOG_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT), "a") as log:
         subprocess.Popen([sys.executable, os.path.abspath(__file__), "daemon", "--ensure"],
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
 
@@ -1760,6 +1790,7 @@ def print_discovery(found: list[dict]) -> None:
 
 
 def main() -> None:
+    os.umask(0o077)  # keys and certificates written by the TV libraries stay private
     args = sys.argv[1:]
     first = args[0] if args else ""
     if first in ("-h", "--help", "help"):

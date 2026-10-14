@@ -18,6 +18,8 @@ ready() { [[ -x $venv/bin/python && "$(cat "$stamp" 2>/dev/null)" == "$want" ]];
 
 case "${1:-}" in
 setup)
+  umask 077
+  mkdir -p -m 700 "$(dirname "$venv")"
   echo "omarchy-tv: installing pinned dependencies into $venv"
   if command -v uv >/dev/null 2>&1; then
     uv venv --quiet --allow-existing --python ">=3.11" "$venv"
@@ -26,7 +28,9 @@ setup)
     python3 -m venv "$venv"
     "$venv/bin/python" -m pip install --quiet --require-hashes -r "$lock"
   fi
-  printf '%s' "$want" >"$stamp"
+  tmp="$(mktemp "$venv/.requirements-sha256.XXXXXX")"
+  printf '%s' "$want" >"$tmp"
+  mv -fT -- "$tmp" "$stamp"
   echo "omarchy-tv: ready"
   exit 0
   ;;

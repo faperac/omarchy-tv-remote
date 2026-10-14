@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1
+
+- Hardened every file the remote writes. Config, credentials and runtime
+  directories must be real directories owned by you (created 0700, tightened if
+  looser). `config.json` / `credentials.json` are written to an exclusive
+  `mkstemp` file and renamed over the target; `status.json`, the lock, the log
+  and the command FIFO are opened with `O_NOFOLLOW` and checked by `fstat`
+  (type and owner). The process runs with umask 077, so TV pairing keys are
+  never briefly world-readable. Without `XDG_RUNTIME_DIR`, the runtime fallback
+  `/tmp/omarchy-tv-<uid>` is refused if someone else created it.
+
 ## 0.3.0
 - Renamed to **Universal TV Remote**.
 - Fire TV and other Android devices over ADB (pure Python, no `adb` binary).
