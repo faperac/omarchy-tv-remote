@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Runs omarchy_tv.py inside a private Python environment.
+#
+#   omarchy-tv setup   create the environment and install the pinned,
+#                      hash-checked dependencies from requirements.lock
+#   omarchy-tv check   exit 0 when the environment is ready, 3 otherwise
+#
+# Nothing is installed without an explicit `setup` (the popup asks first).
+set -euo pipefail
+
+here="$(dirname "$(readlink -f "$0")")"
+lock="$here/requirements.lock"
+venv="${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-tv/venv"
+stamp="$venv/.requirements-sha256"
+want="$(sha256sum "$lock" | cut -d' ' -f1)"
+
+ready() { [[ -x $venv/bin/python && "$(cat "$stamp" 2>/dev/null)" == "$want" ]]; }
+
+case "${1:-}" in
+setup)
+  echo "omarchy-tv: installing pinned dependencies into $venv"
+  if command -v uv >/dev/null 2>&1; then
+    uv venv --quiet --allow-existing --python ">=3.11" "$venv"
+    uv pip install --quiet --python "$venv/bin/python" --require-hashes -r "$lock"
+  else
+    python3 -m venv "$venv"
+    "$venv/bin/python" -m pip install --quiet --require-hashes -r "$lock"
+  fi
+  printf '%s' "$want" >"$stamp"
+  echo "omarchy-tv: ready"
+  exit 0
+  ;;
+check)
+  ready && exit 0 || exit 3
+  ;;
+esac
+
+if ! ready; then
+  echo "omarchy-tv: dependencies are not installed yet — run: omarchy-tv setup" >&2
+  exit 3
+fi
+exec "$venv/bin/python" "$here/omarchy_tv.py" "$@"

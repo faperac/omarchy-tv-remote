@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "faperac.tv",
+  "name": "Universal TV Remote",
+  "version": "0.3.0",
+  "author": "faperac",
+  "license": "MIT",
+  "description": "Universal TV remote in the bar: finds TVs and streaming boxes on the local network, pairs them, and shows a remote tailored to each one — Google TV / Android TV, Fire TV, Apple TV, Samsung (Tizen), LG (webOS), Roku and Chromecast.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Universal TV Remote",
+    "description": "TV app and volume; click: remote, scroll: volume",
+    "category": "Media",
+    "aliases": [
+      "tv",
+      "remote",
+      "chromecast",
+      "google-tv",
+      "android-tv",
+      "fire-tv",
+      "apple-tv",
+      "samsung",
+      "lg",
+      "roku"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right"
+  },
+  "repository": "https://github.com/faperac/omarchy-tv-remote"
+}

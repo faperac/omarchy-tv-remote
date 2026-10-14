@@ -1,0 +1,12 @@
+[Unit]
+Description=Omarchy TV remote (TV connections, state for the bar)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.config/omarchy/plugins/faperac.tv/bin/omarchy-tv daemon
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=graphical-session.target
