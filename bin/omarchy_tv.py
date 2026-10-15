@@ -17,6 +17,7 @@ volume only).
   tv list                       configured devices and commands
   tv remove|rename|default|volume-via ...   settings (see tv list)
   tv daemon [--ensure]          background service (started automatically)
+  tv op -                       one JSON request on stdin (used by the bar plugin)
 
 Keys: power on off input settings menu search up down left right ok back
 home exit mute vol+ vol- play pause stop rew ff prev next ch+ ch- info captions
@@ -1800,7 +1801,10 @@ def main() -> None:
         run_daemon("--ensure" in args)
         return
     if first == "op" and len(args) == 2:  # used by the bar plugin
-        daemon_send(json.loads(args[1]))
+        # "op -" reads the JSON request from stdin, so pairing codes and typed
+        # text never appear in the process arguments (visible to other users).
+        raw = sys.stdin.readline() if args[1] == "-" else args[1]
+        daemon_send(json.loads(raw))
         return
     if first in ("discover", "scan"):
         before = read_status().get("discovery", {}).get("at")

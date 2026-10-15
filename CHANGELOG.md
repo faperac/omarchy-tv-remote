@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2
+- The popup sends every request to the service over stdin (`omarchy-tv op -`)
+  instead of command-line arguments, so pairing codes and typed searches never
+  appear in the process list visible to other local users.
+
 ## 0.3.1
 
 - Hardened every file the remote writes. Config, credentials and runtime

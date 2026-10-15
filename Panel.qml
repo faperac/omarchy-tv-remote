@@ -65,9 +65,14 @@ Panel {
     function deviceName(id) {
         return status && status.devices && status.devices[id] ? status.devices[id].name : id;
     }
-    // execArgv runs the command without a shell: typed text stays literal.
-    function send(cmd) { if (ready && cli && currentDevice) Util.execArgv([cli, currentDevice, cmd]); }
-    function op(obj) { if (ready && cli) Util.execArgv([cli, "op", JSON.stringify(obj)]); }
+    // Every request goes to "omarchy-tv op -" over stdin, never argv: pairing
+    // codes and typed searches must not show up in other users' process lists.
+    function send(cmd) { if (currentDevice) op({ op: "send", device: currentDevice, cmds: [cmd] }); }
+    function op(obj) {
+        if (!ready || !cli) return;
+        var proc = requestComponent.createObject(root, { command: [cli, "op", "-"], payload: JSON.stringify(obj) });
+        proc.running = true;
+    }
     function installDeps() { if (hostWidget) hostWidget.installDeps(); }
     function selectDevice(id) {
         device = id;
@@ -114,6 +119,20 @@ Panel {
     }
 
     Timer { id: noteTimer; onTriggered: root.note = "" }
+
+    // One short-lived process per request, so fast key presses don't queue up.
+    Component {
+        id: requestComponent
+        Process {
+            property string payload: ""
+            stdinEnabled: true
+            onStarted: {
+                write(payload + "\n");
+                payload = "";
+            }
+            onExited: destroy()
+        }
+    }
 
     // "omarchy-shell faperac.tv.remote press vol+": same path as clicking a key
     // (handy for Hyprland keybindings).
